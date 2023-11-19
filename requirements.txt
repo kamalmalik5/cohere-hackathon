@@ -1,0 +1,6 @@
+streamlit
+langchain
+chromadb
+cohere
+chardet
+pysqlite3-binary
