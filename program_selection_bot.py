@@ -1,4 +1,16 @@
-#not all imports really needed, I have to clean
+#import Streamlit App
+import streamlit as st
+
+#fix sqlite3 only on when run on Streamlit Cloud
+#if "DEPLOYED_TO_CLOUD" in st.secrets and st.secrets["DEPLOYED_TO_CLOUD"] == 1:
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except:
+    print('info: did not require any changes to sqlite3 on this OS')
+
+#imports
 from langchain.chat_models import ChatCohere
 from langchain.schema import HumanMessage
 import cohere  
@@ -16,30 +28,43 @@ from langchain.memory import ConversationBufferMemory
 import os
 from langchain.document_loaders import TextLoader
 from chromadb.utils import embedding_functions
-import streamlit as st
-from dotenv import load_dotenv
+import configparser
+
+config = configparser.ConfigParser()
+config.read('config.ini')
+print(config['LANGCHAIN_COHERE']['MAX_TOKENS'])
 
 
-@st.cache_resource
+#   Get Parameter Variables
+if "temperature" not in st.session_state:
+    st.session_state.temperature = float(config['LANGCHAIN_COHERE']['TEMPERATURE'])
+    
+if "search_k" not in st.session_state:
+    st.session_state.search_k = int(config['LANGCHAIN_COHERE']['SEARCH_K'])
+
+if "chunk_size" not in st.session_state:
+    st.session_state.chunk_size = int(config['LANGCHAIN_COHERE']['CHUNK_SIZE'] )
+
+if "max_tokens" not in st.session_state:
+    st.session_state.max_tokens = int(config['LANGCHAIN_COHERE']['MAX_TOKENS'])
+
+if "chunk_overlap" not in st.session_state:
+    st.session_state.chunk_overlap = float(config['LANGCHAIN_COHERE']['CHUNK_OVERLAP'] )
+
+if "chat_input" not in st.session_state:
+    st.session_state.chat_input = config['STREAMLIT_UI']['CHAT_INPUT'] 
+
+if "init_assistant_message" not in st.session_state:
+    st.session_state.init_assistant_message = config['STREAMLIT_UI']['INIT_ASSISTANCE_MESSAGE'] 
+
+api_key=st.secrets["COHERE_API_KEY"] if "COHERE_API_KEY" in st.secrets else None
+if api_key == None:
+    raise Exception('Require a COHERE_API_KEY to be setup in as an environment variable')    
+
+st.title(config['STREAMLIT_UI']['TITLE'])
+
+#@st.cache_resource
 def setup_chain():
-    #Get Environment Variables
-    load_dotenv()
-    api_key=os.getenv('COHERE_API_KEY')
-    if api_key == None:
-        raise Exception('Require a COHERE_API_KEY to be setup in as an environment variable')
-    max_tokens=int(os.getenv('MAX_TOKENS') or 600)
-    
-    if "temperature" not in st.session_state:
-        st.session_state.temperature = float(os.getenv('TEMPERATURE') or 0.75)
-    
-    if "search_k" not in st.session_state:
-        st.session_state.search_k = int(os.getenv('SEARCH_K') or 1)
-
-    if "chunk_size" not in st.session_state:
-        st.session_state.chunk_size = int(os.getenv('CHUNK_SIZE') or 1000)
-
-    print('max_tokens',max_tokens,'temperature',st.session_state.temperature,'search_k',st.session_state.search_k, 'chunk_size', st.session_state.chunk_size)
-    
     #Initalize Cohere
     co = cohere.Client(api_key)
     #I put the text file into u_data folder, you can usde your path
@@ -48,11 +73,11 @@ def setup_chain():
     docs = loader.load()
     len(docs)
     embeddings = CohereEmbeddings(cohere_api_key=api_key)
-    text_splitter = CharacterTextSplitter(chunk_size=st.session_state.chunk_size, chunk_overlap=0)
+    text_splitter = CharacterTextSplitter(chunk_size=st.session_state.chunk_size, chunk_overlap=st.session_state.chunk_overlap)
     documents = text_splitter.split_documents(docs)
     vectorstore = Chroma.from_documents(documents, embeddings) #db
     index = VectorStoreIndexWrapper(vectorstore=vectorstore)
-    model =ChatCohere(model="command-nightly",max_tokens=max_tokens,temperature=st.session_state.temperature, cohere_api_key=api_key)
+    model =ChatCohere(model="command-nightly",max_tokens=st.session_state.max_tokens,temperature=st.session_state.temperature, cohere_api_key=api_key)
 
     template = """
     Use the following context (delimited by <ctx></ctx>) and the chat history (delimited by <hs></hs>) to answer the question:
@@ -83,7 +108,8 @@ def setup_chain():
     
     return chain
 
-chain = setup_chain()
+if "chain" not in st.session_state:
+    st.session_state.chain = setup_chain()
 
 question = ""
 
@@ -92,19 +118,20 @@ def submit_parameters():
     st.session_state.chunk_size = int(st.session_state.chunk_size_parameter)
     st.session_state.search_k = int(st.session_state.search_k_parameter)
     st.session_state.temperature = float(st.session_state.temperature_parameter)
+    st.session_state.max_tokens = int(st.session_state.max_tokens_parameter)
+    st.session_state.chunk_overlap = float(st.session_state.chunk_overlap_parameter)
     st.session_state.messages = []
-    st.cache_resource.clear()
+    del st.session_state["chain"]
+    #st.cache_resource.clear()
 
 with st.sidebar.form("Parameters"):
     st.slider('Temperature',0.00,1.00,st.session_state.temperature,.05, key="temperature_parameter")
     st.slider('Search K',1,10,st.session_state.search_k,1, key="search_k_parameter")
     st.slider('Chunk Size',200,2500,st.session_state.chunk_size,100, key="chunk_size_parameter")
-    submitted = st.form_submit_button("Submit", on_click=submit_parameters)
+    st.slider('Max Tokens',100,1000,st.session_state.max_tokens,100, key="max_tokens_parameter")
+    st.slider('Chunk Overlap',0.00,0.50,st.session_state.chunk_overlap,0.05, key="chunk_overlap_parameter")
+    submitted = st.form_submit_button("Submit and Reset", on_click=submit_parameters)
      
-
-
-st.title("Program Selection")
-
 # Initialize chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -115,7 +142,7 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # React to user input
-if question := st.chat_input("What do you want to know about?"):
+if question := st.chat_input(st.session_state.chat_input):
     # Display user message in chat message container
     with st.chat_message("user"):
         st.markdown(question)
@@ -123,11 +150,11 @@ if question := st.chat_input("What do you want to know about?"):
     st.session_state.messages.append({"role": "user", "content": question})
 
 # First default response from Assistance
-response = "I am the U of T Program Selection Assistant - How may I help you?"
+response = st.session_state.init_assistant_message
 
 if question != None:
     #response = f"{list(chain(prompt).values())[1]}"
-    response = chain.run({"query": question})
+    response = st.session_state.chain.run({"query": question})
 # Display assistant response in chat message container
 with st.chat_message("assistant"):
     st.markdown(response)
